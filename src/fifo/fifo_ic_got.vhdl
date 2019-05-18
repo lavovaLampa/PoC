@@ -65,323 +65,332 @@
 -- limitations under the License.
 -- =============================================================================
 
-library	IEEE;
-use			IEEE.std_logic_1164.all;
-use			IEEE.numeric_std.all;
+library IEEE;
+use IEEE.std_logic_1164.all;
+use IEEE.numeric_std.all;
 
-library	poc;
-use			PoC.utils.all;
-use			poc.ocram.all; -- "all" required by Quartus RTL simulation
-
+library poc;
+use PoC.utils.all;
+use poc.ocram.all;                      -- "all" required by Quartus RTL simulation
 
 entity fifo_ic_got is
-  generic (
-    D_BITS         : positive;          -- Data Width
-    MIN_DEPTH      : positive;          -- Minimum FIFO Depth
-    DATA_REG       : boolean := false;  -- Store Data Content in Registers
-    OUTPUT_REG     : boolean := false;  -- Registered FIFO Output
-    ESTATE_WR_BITS : natural := 0;      -- Empty State Bits
-    FSTATE_RD_BITS : natural := 0       -- Full State Bits
-  );
-  port (
-    -- Write Interface
-    clk_wr    : in  std_logic;
-    rst_wr    : in  std_logic;
-    put       : in  std_logic;
-    din       : in  std_logic_vector(D_BITS-1 downto 0);
-    full      : out std_logic;
-    estate_wr : out std_logic_vector(imax(ESTATE_WR_BITS-1, 0) downto 0);
-
-    -- Read Interface
-    clk_rd    : in  std_logic;
-    rst_rd    : in  std_logic;
-    got       : in  std_logic;
-    valid     : out std_logic;
-    dout      : out std_logic_vector(D_BITS-1 downto 0);
-    fstate_rd : out std_logic_vector(imax(FSTATE_RD_BITS-1, 0) downto 0)
-  );
+    generic(
+        D_BITS         : positive;      -- Data Width
+        MIN_DEPTH      : positive;      -- Minimum FIFO Depth
+        DATA_REG       : boolean := false; -- Store Data Content in Registers
+        OUTPUT_REG     : boolean := false; -- Registered FIFO Output
+        ESTATE_WR_BITS : natural := 0;  -- Empty State Bits
+        FSTATE_RD_BITS : natural := 0   -- Full State Bits
+    );
+    port(
+        -- Write Interface
+        writeClkIn    : in  std_logic;
+        writeRstIn    : in  std_logic;
+        putIn         : in  boolean;
+        dataIn        : in  std_logic_vector(D_BITS - 1 downto 0);
+        fullOut       : out boolean;
+        writeStateOut : out std_logic_vector(imax(ESTATE_WR_BITS - 1, 0) downto 0);
+        -- Read Interface
+        readClkIn     : in  std_logic;
+        readRstIn     : in  std_logic;
+        gotIn         : in  boolean;
+        valid         : out boolean;
+        dataOut       : out std_logic_vector(D_BITS - 1 downto 0);
+        readStateOut  : out std_logic_vector(imax(FSTATE_RD_BITS - 1, 0) downto 0)
+    );
 end entity fifo_ic_got;
-
 
 architecture rtl of fifo_ic_got is
 
-  -- Constants
-  constant A_BITS : positive := log2ceilnz(MIN_DEPTH);
-  constant AN     : positive := A_BITS + 1;
+    -- Constants
+    constant A_BITS : positive := log2ceilnz(MIN_DEPTH);
+    constant AN     : positive := A_BITS + 1; -- to prevent overflow?
 
-  -- Registers, clk_wr domain
-  signal IP1 : std_logic_vector(AN-1 downto 0);                     -- IP + 1
-  signal IP0 : std_logic_vector(AN-1 downto 0) := (others => '0');  -- Write Pointer IP
-  signal IPz : std_logic_vector(AN-1 downto 0) := (others => '0');  -- IP delayed by one clock
-	signal OPs : std_logic_vector(AN-1 downto 0) := (others => '0');  -- Sync stage: OP0 -> OPc
-  signal OPc : std_logic_vector(AN-1 downto 0) := (others => '0');  -- Copy of OP
-  signal Ful : std_logic                       := '0';              -- RAM full
+    -- Types
+    subtype Data_T is std_logic_vector(D_BITS - 1 downto 0);
+    subtype Addr_T is unsigned(A_BITS - 1 downto 0);
+    subtype Addr_Ptr_T is std_logic_vector(AN - 1 downto 0);
+    subtype Valid_Addr_Range is natural range A_BITS - 1 downto 0;
 
-  -- Registers, clk_rd domain
-  signal OP1 : std_logic_vector(AN-1 downto 0);                     -- OP + 1
-  signal OP0 : std_logic_vector(AN-1 downto 0) := (others => '0');  -- Read Pointer OP
-  signal IPs : std_logic_vector(AN-1 downto 0) := (others => '0');  -- Sync stage: IPz -> IPc
-  signal IPc : std_logic_vector(AN-1 downto 0) := (others => '0');  -- Copy of IP
-  signal Avl : std_logic                       := '0';              -- RAM Data available
-  signal Vld : std_logic                       := '0';              -- Output Valid
+    -- Registers, writeClkIn domain
+    signal writePtrNext : Addr_Ptr_T;   -- IP + 1
+    signal writePtr     : Addr_Ptr_T := (others => '0'); -- Write Pointer IP
+    signal writePtrPrev : Addr_Ptr_T := (others => '0'); -- IP delayed by one clock
+    signal readPtrSync  : Addr_Ptr_T := (others => '0'); -- Sync stage: OP0 -> OPc
+    signal readPtrCopy  : Addr_Ptr_T := (others => '0'); -- Copy of OP
+    signal ramFull      : boolean    := false; -- RAM full
 
-  -- Memory Connectivity
-  signal wa   : unsigned(A_BITS-1 downto 0);
-  signal di   : std_logic_vector(D_BITS-1 downto 0);
-  signal puti : std_logic;
+    -- Registers, readClkIn domain
+    signal readPtrNext      : Addr_Ptr_T; -- OP + 1
+    signal readPtr          : Addr_Ptr_T := (others => '0'); -- Read Pointer OP
+    signal writePtrSync     : Addr_Ptr_T := (others => '0'); -- Sync stage: IPz -> IPc
+    signal writePtrCopy     : Addr_Ptr_T := (others => '0'); -- Copy of IP
+    signal memDataAvailable : boolean    := false; -- RAM Data available
+    signal outputValid      : boolean    := false; -- Output Valid
 
-  signal ra   : unsigned(A_BITS-1 downto 0);
-  signal do   : std_logic_vector(D_BITS-1 downto 0);
-  signal geti : std_logic;
+    -- Memory Connectivity
+    signal memWriteAddr : Addr_T;
+    signal memDataIn    : Data_T;
+    signal putNewData   : boolean;
 
-  signal goti : std_logic;              -- Internal Read ACK
+    signal memReadAddr : Addr_T;
+    signal memDataOut  : Data_T;
+    signal getNewData  : boolean;
+
+    signal gotData : boolean;           -- Internal Read ACK
 
 begin
 
-  -----------------------------------------------------------------------------
-  -- Write clock domain
-  -----------------------------------------------------------------------------
-  blkIP: block
-    signal Cnt : unsigned(AN-1 downto 0) := to_unsigned(1, AN);
-  begin
-    process(clk_wr)
+    -----------------------------------------------------------------------------
+    -- Write clock domain
+    -----------------------------------------------------------------------------
+
+    -- compute next pointer value
+    blkIP : block
+        signal currCount : unsigned(AN - 1 downto 0) := to_unsigned(1, AN);
     begin
-      if rising_edge(clk_wr) then
-        if rst_wr = '1' then
-          Cnt <= to_unsigned(1, AN);
-        elsif puti = '1' then
-          Cnt <= Cnt + 1;
-        end if;
-      end if;
-    end process;
-    IP1 <= std_logic_vector(Cnt(A_BITS) & (Cnt(A_BITS-1 downto 0) xor ('0' & Cnt(A_BITS-1 downto 1))));
-  end block blkIP;
+        process(writeClkIn)
+        begin
+            if rising_edge(writeClkIn) then
+                if writeRstIn = '1' then
+                    currCount <= to_unsigned(1, AN);
+                elsif putNewData then
+                    currCount <= currCount + 1;
+                end if;
+            end if;
+        end process;
+        -- compute next pointer value (circular fifo?)
+        writePtrNext <= std_logic_vector(currCount(A_BITS) & (currCount(A_BITS - 1 downto 0) xor ('0' & currCount(A_BITS - 1 downto 1))));
+    end block blkIP;
 
-  -- Update Write Pointer upon puti
-  process(clk_wr)
-  begin
-    if rising_edge(clk_wr) then
-      if rst_wr = '1' then
-        IP0 <= (others => '0');
-        IPz <= (others => '0');
-				OPs <= (others => '0');
-        OPc <= (others => '0');
-        Ful <= '0';
-      else
-        IPz <= IP0;
-        OPs <= OP0;
-        OPc <= OPs;
-        if puti = '1' then
-          IP0 <= IP1;
-          if IP1(A_BITS-1 downto 0) = OPc(A_BITS-1 downto 0) then
-            Ful <= '1';
-          else
-            Ful <= '0';
-          end if;
-        end if;
-        if Ful = '1' then
-          if IP0 = (not OPc(A_BITS) & OPc(A_BITS-1 downto 0)) then
-            Ful <= '1';
-          else
-            Ful <= '0';
-          end if;
-        end if;
-      end if;
-    end if;
-  end process;
-  puti <= put and not Ful;
-  full <= Ful;
-
-  di <= din;
-  wa <= unsigned(IP0(A_BITS-1 downto 0));
-
-  -----------------------------------------------------------------------------
-  -- Read clock domain
-  -----------------------------------------------------------------------------
-  blkOP: block
-    signal Cnt : unsigned(AN-1 downto 0) := to_unsigned(1, AN);
-  begin
-    process(clk_rd)
+    -- Update write Pointer upon putNewData
+    process(writeClkIn)
     begin
-      if rising_edge(clk_rd) then
-        if rst_rd = '1' then
-          Cnt <= to_unsigned(1, AN);
-        elsif geti = '1' then
-          Cnt <= Cnt + 1;
+        if rising_edge(writeClkIn) then
+            if writeRstIn = '1' then
+                writePtr     <= (others => '0');
+                writePtrPrev <= (others => '0');
+                readPtrSync  <= (others => '0');
+                readPtrCopy  <= (others => '0');
+                ramFull      <= false;
+            else
+                writePtrPrev <= writePtr;
+                readPtrSync  <= readPtr;
+                readPtrCopy  <= readPtrSync;
+
+                if putNewData then
+                    writePtr <= writePtrNext;
+                    if writePtrNext(Valid_Addr_Range) = readPtrCopy(Valid_Addr_Range) then
+                        ramFull <= true;
+                    else
+                        ramFull <= false;
+                    end if;
+                end if;
+
+                if ramFull then
+                    if writePtr = (not readPtrCopy(A_BITS) & readPtrCopy(A_BITS - 1 downto 0)) then
+                        ramFull <= true;
+                    else
+                        ramFull <= false;
+                    end if;
+                end if;
+
+            end if;
         end if;
-      end if;
     end process;
-    OP1 <= std_logic_vector(Cnt(A_BITS) & (Cnt(A_BITS-1 downto 0) xor ('0' & Cnt(A_BITS-1 downto 1))));
-  end block blkOP;
+    putNewData <= putIn and not ramFull;
+    fullOut    <= ramFull;
 
-  process(clk_rd)
-  begin
-    if rising_edge(clk_rd) then
-      if rst_rd = '1' then
-        OP0 <= (others => '0');
-				IPs <= (others => '0');
-        IPc <= (others => '0');
-        Avl <= '0';
-        Vld <= '0';
-      else
-        IPs <= IPz;
-        IPc <= IPs;
-        if geti = '1' then
-          OP0 <= OP1;
-          if OP1(A_BITS-1 downto 0) = IPc(A_BITS-1 downto 0) then
-            Avl <= '0';
-          else
-            Avl <= '1';
-          end if;
-          Vld <= '1';
-        elsif goti = '1' then
-          Vld <= '0';
-        end if;
+    memDataIn    <= dataIn;
+    memWriteAddr <= unsigned(writePtr(A_BITS - 1 downto 0));
 
-        if Avl = '0' then
-          if OP0 = IPc then
-            Avl <= '0';
-          else
-            Avl <= '1';
-          end if;
-        end if;
-
-      end if;
-    end if;
-  end process;
-  geti <= (not Vld or goti) and Avl;
-  ra   <= unsigned(OP0(A_BITS-1 downto 0));
-
-  -----------------------------------------------------------------------------
-  -- Add register to data output
-  --
-  -- Not needed if DATA_REG = true, because "dout" is already feed from a
-  -- register in that case.
-  -----------------------------------------------------------------------------
-  genRegN: if DATA_REG or not OUTPUT_REG generate
-    goti  <= got;
-    dout  <= do;
-    valid <= Vld;
-  end generate genRegN;
-  genRegY: if (not DATA_REG) and OUTPUT_REG generate
-    signal Buf  : std_logic_vector(D_BITS-1 downto 0) := (others => '-');
-    signal VldB : std_logic := '0';
-  begin
-   process(clk_rd)
-   begin
-     if rising_edge(clk_rd) then
-       if rst_rd = '1' then
-         Buf  <= (others => '-');
-         VldB <= '0';
-       elsif goti = '1' then
-         Buf  <= do;
-         VldB <= Vld;
-       end if;
-     end if;
-   end process;
-   goti  <= not VldB or got;
-   dout  <= Buf;
-   valid <= VldB;
-  end generate genRegY;
-
-  -----------------------------------------------------------------------------
-  -- Fill State
-  -----------------------------------------------------------------------------
-  -- Write Clock Domain
-  gEstateWr: if ESTATE_WR_BITS >= 1 generate
-    signal  d : unsigned(A_BITS-1 downto 0);
-  begin
-    d         <= unsigned(gray2bin(OPc(A_BITS-1 downto 0))) + not unsigned(gray2bin(IP0(A_BITS-1 downto 0)));
-    estate_wr <= (others => '0') when Ful = '1' else
-                 std_logic_vector(d(d'left downto d'left-ESTATE_WR_BITS+1));
-  end generate gEstateWr;
-  gNoEstateWr: if ESTATE_WR_BITS = 0 generate
-    estate_wr <= "X";
-  end generate gNoEstateWr;
-
-  -- Read Clock Domain
-  gFstateRd: if FSTATE_RD_BITS >= 1 generate
-    signal  d : unsigned(A_BITS-1 downto 0);
-  begin
-    d         <= unsigned(gray2bin(IPc(A_BITS-1 downto 0))) + not unsigned(gray2bin(OP0(A_BITS-1 downto 0)));
-    fstate_rd <= (others => '0') when Avl = '0' else
-                 std_logic_vector(d(d'left downto d'left-FSTATE_RD_BITS+1));
-  end generate gFstateRd;
-  gNoFstateRd: if FSTATE_RD_BITS = 0 generate
-    fstate_rd <= "X";
-  end generate gNoFstateRd;
-
-  -----------------------------------------------------------------------------
-  -- Memory Instantiation
-  -----------------------------------------------------------------------------
-  gLarge: if not DATA_REG generate
-    ram : entity PoC.ocram_sdp
-      generic map (
-        A_BITS => A_BITS,
-        D_BITS => D_BITS
-        )
-      port map (
-        wclk   => clk_wr,
-        rclk   => clk_rd,
-        wce    => '1',
-        rce    => geti,
-        we     => puti,
-        ra     => ra,
-        wa     => wa,
-        d      => di,
-        q      => do
-        );
-  end generate gLarge;
-
-  gSmall: if DATA_REG generate
-    -- Memory modelled as Array
-    type regfile_t is array(0 to 2**A_BITS-1) of std_logic_vector(D_BITS-1 downto 0);
-    signal regfile : regfile_t;
-    attribute ram_style            : string;  -- XST specific
-    attribute ram_style of regfile : signal is "distributed";
-
-    -- Altera Quartus II: Allow automatic RAM type selection.
-    -- For small RAMs, registers are used on Cyclone devices and the M512 type
-    -- is used on Stratix devices. Pass-through logic is not required as
-    -- reads do not occur on write addresses.
-    -- Warning about undefined read-during-write behaviour can be ignored.
-    attribute ramstyle : string;
-    attribute ramstyle of regfile : signal is "no_rw_check";
-  begin
-
-    -- Memory State
-    process(clk_wr)
+    -----------------------------------------------------------------------------
+    -- Read clock domain
+    -----------------------------------------------------------------------------
+    blkOP : block
+        signal currCount : unsigned(AN - 1 downto 0) := to_unsigned(1, AN);
     begin
-      if rising_edge(clk_wr) then
-        --synthesis translate_off
-        if SIMULATION and (rst_wr = '1') then
-          regfile <= (others => (others => '-'));
-        else
-        --synthesis translate_on
-          if puti = '1' then
-            regfile(to_integer(wa)) <= di;
-          end if;
-      --synthesis translate_off
-        end if;
-      --synthesis translate_on
-      end if;
-    end process;
+        process(readClkIn)
+        begin
+            if rising_edge(readClkIn) then
+                if readRstIn = '1' then
+                    currCount <= to_unsigned(1, AN);
+                elsif getNewData then
+                    currCount <= currCount + 1;
+                end if;
+            end if;
+        end process;
+        -- compute next pointer value
+        readPtrNext <= std_logic_vector(currCount(A_BITS) & (currCount(A_BITS - 1 downto 0) xor ('0' & currCount(A_BITS - 1 downto 1))));
+    end block blkOP;
 
-    -- Memory Output
-    process (clk_rd)
-    begin  -- process
-      if rising_edge(clk_rd) then
-        if SIMULATION and (rst_rd = '1') then
-          do <= (others => 'U');
-        elsif geti = '1' then
-          if Is_X(std_logic_vector(ra)) then
-            do <= (others => 'X');
-          else
-            do <= regfile(to_integer(ra));
-          end if;
+    process(readClkIn)
+    begin
+        if rising_edge(readClkIn) then
+            if readRstIn = '1' then
+                readPtr          <= (others => '0');
+                writePtrSync     <= (others => '0');
+                writePtrCopy     <= (others => '0');
+                memDataAvailable <= false;
+                outputValid      <= false;
+            else
+                writePtrSync <= writePtrPrev;
+                writePtrCopy <= writePtrSync;
+                if getNewData then
+                    readPtr     <= readPtrNext;
+                    if readPtrNext(Valid_Addr_Range) = writePtrCopy(Valid_Addr_Range) then
+                        memDataAvailable <= false;
+                    else
+                        memDataAvailable <= true;
+                    end if;
+                    outputValid <= true;
+                elsif gotData then
+                    outputValid <= false;
+                end if;
+
+                if not memDataAvailable then
+                    if readPtr = writePtrCopy then
+                        memDataAvailable <= false;
+                    else
+                        memDataAvailable <= true;
+                    end if;
+                end if;
+
+            end if;
         end if;
-      end if;
     end process;
-  end generate gSmall;
+    getNewData  <= (not outputValid or gotData) and memDataAvailable;
+    memReadAddr <= unsigned(readPtr(A_BITS - 1 downto 0));
+
+    -----------------------------------------------------------------------------
+    -- Add register to data output
+    --
+    -- Not needed if DATA_REG = true, because "dout" is already feed from a
+    -- register in that case.
+    -----------------------------------------------------------------------------
+    genRegN : if DATA_REG or not OUTPUT_REG generate
+        gotData <= gotIn;
+        dataOut <= memDataOut;
+        valid   <= outputValid;
+    end generate genRegN;
+    genRegY : if (not DATA_REG) and OUTPUT_REG generate
+        signal dataOutBuf : Data_T  := (others => '-');
+        signal VldB       : boolean := false;
+    begin
+        process(readClkIn)
+        begin
+            if rising_edge(readClkIn) then
+                if readRstIn = '1' then
+                    dataOutBuf <= (others => '-');
+                    VldB       <= false;
+                elsif gotData then
+                    dataOutBuf <= memDataOut;
+                    VldB       <= outputValid;
+                end if;
+            end if;
+        end process;
+        gotData <= not VldB or gotIn;
+        dataOut <= dataOutBuf;
+        valid   <= VldB;
+    end generate genRegY;
+
+    -----------------------------------------------------------------------------
+    -- Fill State
+    -----------------------------------------------------------------------------
+    -- Write Clock Domain
+    gEstateWr : if ESTATE_WR_BITS >= 1 generate
+        signal d : unsigned(A_BITS - 1 downto 0);
+    begin
+        d             <= unsigned(gray2bin(readPtrCopy(A_BITS - 1 downto 0))) + not unsigned(gray2bin(writePtr(A_BITS - 1 downto 0)));
+        writeStateOut <= (others => '0') when ramFull else std_logic_vector(d(d'left downto d'left - ESTATE_WR_BITS + 1));
+    end generate gEstateWr;
+    gNoEstateWr : if ESTATE_WR_BITS = 0 generate
+        writeStateOut <= "X";
+    end generate gNoEstateWr;
+
+    -- Read Clock Domain
+    gFstateRd : if FSTATE_RD_BITS >= 1 generate
+        signal d : unsigned(A_BITS - 1 downto 0);
+    begin
+        d            <= unsigned(gray2bin(writePtrCopy(A_BITS - 1 downto 0))) + not unsigned(gray2bin(readPtr(A_BITS - 1 downto 0)));
+        readStateOut <= (others => '0') when (not memDataAvailable) else std_logic_vector(d(d'left downto d'left - FSTATE_RD_BITS + 1));
+    end generate gFstateRd;
+    gNoFstateRd : if FSTATE_RD_BITS = 0 generate
+        readStateOut <= "X";
+    end generate gNoFstateRd;
+
+    -----------------------------------------------------------------------------
+    -- Memory Instantiation
+    -----------------------------------------------------------------------------
+    gLarge : if not DATA_REG generate
+        ram : entity PoC.ocram_sdp
+            generic map(
+                A_BITS => A_BITS,
+                D_BITS => D_BITS
+            )
+            port map(
+                wclk => writeClkIn,
+                rclk => readClkIn,
+
+                wce  => '1',
+                rce  => to_sl(getNewData),
+                we   => to_sl(putNewData),
+                ra   => memReadAddr,
+                wa   => memWriteAddr,
+                d    => memDataIn,
+                q    => memDataOut
+            );
+    end generate gLarge;
+
+    gSmall : if DATA_REG generate
+        -- Memory modelled as Array
+        type regfile_t is array (0 to 2**A_BITS - 1) of std_logic_vector(D_BITS - 1 downto 0);
+        signal regfile      : regfile_t;
+        attribute ram_style : string;   -- XST specific
+        attribute ram_style of regfile : signal is "distributed";
+
+        -- Altera Quartus II: Allow automatic RAM type selection.
+        -- For small RAMs, registers are used on Cyclone devices and the M512 type
+        -- is used on Stratix devices. Pass-through logic is not required as
+        -- reads do not occur on write addresses.
+        -- Warning about undefined read-during-write behaviour can be ignored.
+        attribute ramstyle : string;
+        attribute ramstyle of regfile : signal is "no_rw_check";
+    begin
+
+        -- Memory State
+        process(writeClkIn)
+        begin
+            if rising_edge(writeClkIn) then
+                --synthesis translate_off
+                if SIMULATION and (writeRstIn = '1') then
+                    regfile <= (others => (others => '-'));
+                else
+                    --synthesis translate_on
+                    if putNewData then
+                        regfile(to_integer(memWriteAddr)) <= memDataIn;
+                    end if;
+                    --synthesis translate_off
+                end if;
+                --synthesis translate_on
+            end if;
+        end process;
+
+        -- Memory Output
+        process(readClkIn)
+        begin                           -- process
+            if rising_edge(readClkIn) then
+                if SIMULATION and (readRstIn = '1') then
+                    memDataOut <= (others => 'U');
+                elsif getNewData then
+                    if Is_X(std_logic_vector(memReadAddr)) then
+                        memDataOut <= (others => 'X');
+                    else
+                        memDataOut <= regfile(to_integer(memReadAddr));
+                    end if;
+                end if;
+            end if;
+        end process;
+    end generate gSmall;
 
 end rtl;

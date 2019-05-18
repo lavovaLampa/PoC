@@ -173,20 +173,20 @@ package fifo is
     );
     port (
       -- Write Interface
-      clk_wr    : in  std_logic;
-      rst_wr    : in  std_logic;
-      put       : in  std_logic;
-      din       : in  std_logic_vector(D_BITS - 1 downto 0);
-      full      : out std_logic;
-      estate_wr : out std_logic_vector(imax(ESTATE_WR_BITS - 1, 0) downto 0);
+      writeClkIn    : in  std_logic;
+      writeRstIn    : in  std_logic;
+      putIn       : in  std_logic;
+      dataIn       : in  std_logic_vector(D_BITS - 1 downto 0);
+      fullOut      : out std_logic;
+      writeStateOut : out std_logic_vector(imax(ESTATE_WR_BITS - 1, 0) downto 0);
 
       -- Read Interface
-      clk_rd    : in  std_logic;
-      rst_rd    : in  std_logic;
-      got       : in  std_logic;
+      readClkIn    : in  std_logic;
+      readRstIn    : in  std_logic;
+      gotIn       : in  std_logic;
       valid     : out std_logic;
-      dout      : out std_logic_vector(D_BITS - 1 downto 0);
-      fstate_rd : out std_logic_vector(imax(FSTATE_RD_BITS - 1, 0) downto 0)
+      dataOut      : out std_logic_vector(D_BITS - 1 downto 0);
+      readStateOut : out std_logic_vector(imax(FSTATE_RD_BITS - 1, 0) downto 0)
     );
   end component;
 

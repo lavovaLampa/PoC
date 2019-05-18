@@ -141,19 +141,19 @@ begin
 			FSTATE_RD_BITS	=> STATE_BITS
 		)
 		port map(
-			clk_wr 			=> clk,
-			rst_wr 			=> reset,
-			put    			=> write_put,
-			din    			=> write_data,
-			full   			=> write_full,
-			estate_wr		=> open,
+			writeClkIn 			=> clk,
+			writeRstIn 			=> reset,
+			putIn    			=> write_put,
+			dataIn    			=> write_data,
+			fullOut   			=> write_full,
+			writeStateOut		=> open,
 
-			clk_rd 			=> clk_icap,
-			rst_rd 			=> reset_icap,
-			got    			=> in_data_rden,
+			readClkIn 			=> clk_icap,
+			readRstIn 			=> reset_icap,
+			gotIn    			=> in_data_rden,
 			valid  			=> in_data_valid,
-			dout   			=> in_data,
-			fstate_rd		=> in_data_fill_state
+			dataOut   			=> in_data,
+			readStateOut		=> in_data_fill_state
 		);
 
 	-- sync data from this core to the pci bus
@@ -166,17 +166,17 @@ begin
 			OUTPUT_REG		=> false
 		)
 		port map(
-			clk_wr 			=> clk_icap,
-			rst_wr 			=> reset_icap,
-			put    			=> out_data_put,
-			din    			=> out_data,
-			full   			=> out_data_full,
+			writeClkIn 			=> clk_icap,
+			writeRstIn 			=> reset_icap,
+			putIn    			=> out_data_put,
+			dataIn    			=> out_data,
+			fullOut   			=> out_data_full,
 
-			clk_rd 			=> clk,
-			rst_rd 			=> reset,
-			got    			=> read_got,
+			readClkIn 			=> clk,
+			readRstIn 			=> reset,
+			gotIn    			=> read_got,
 			valid  			=> read_valid,
-			dout   			=> read_data
+			dataOut   			=> read_data
 		);
 
 	icap_fsm_inst: entity poc.reconfig_icap_fsm port map(

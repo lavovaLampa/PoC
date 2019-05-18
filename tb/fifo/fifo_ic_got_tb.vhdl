@@ -159,19 +159,19 @@ begin
       FSTATE_RD_BITS => FSTATE_RD_BITS
     )
     port map (
-      clk_wr    => clk0,
-      rst_wr    => rst,
-      put       => put0,
-      din       => di0,
-      full      => ful0,
-      estate_wr => open,
+      writeClkIn    => clk0,
+      writeRstIn    => rst,
+      putIn       => put0,
+      dataIn       => di0,
+      fullOut      => ful0,
+      writeStateOut => open,
 
-      clk_rd    => clk1,
-      rst_rd    => rst,
-      got       => got1,
+      readClkIn    => clk1,
+      readRstIn    => rst,
+      gotIn       => got1,
       valid     => vld1,
-      dout      => do1,
-      fstate_rd => open
+      dataOut      => do1,
+      readStateOut => open
     );
 
   -----------------------------------------------------------------------------
@@ -220,19 +220,19 @@ begin
       FSTATE_RD_BITS => FSTATE_RD_BITS
     )
     port map (
-      clk_wr    => clk1,
-      rst_wr    => rst,
-      put       => put1,
-      din       => di1,
-      full      => ful1,
-      estate_wr => open,
+      writeClkIn    => clk1,
+      writeRstIn    => rst,
+      putIn       => put1,
+      dataIn       => di1,
+      fullOut      => ful1,
+      writeStateOut => open,
 
-      clk_rd    => clk2,
-      rst_rd    => rst,
-      got       => got2,
+      readClkIn    => clk2,
+      readRstIn    => rst,
+      gotIn       => got2,
       valid     => vld2,
-      dout      => do2,
-      fstate_rd => open
+      dataOut      => do2,
+      readStateOut => open
     );
 
   -----------------------------------------------------------------------------
